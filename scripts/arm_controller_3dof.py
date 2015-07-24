@@ -21,19 +21,24 @@ class ArmController3DOF(object):
     def __init__(self, limb, moveToInitial=True):
         self.is_stopping = False
         self.rate = rospy.Rate(10) # 4 Hz
-        self.l = .25
         self.limb = limb
         self.joint_names = { 'left_s1', 'left_e1', 'left_w1' }
+        self.delta_angle = 0.2  # Baxter joint angles are in radians
 
         rospy.loginfo('Starting the 3DOF controller for the %s limb', limb)
 
-        # TODO create a publisher for the controller state
+        # TODO create a publisher for the finished action announcer
         #   ...
 
         # TODO look at different msg types (e.g. JointState)
         # Subscriber to a topic where the 3DOF commmands are sent
-        topic_name = "/3dof_baxter_arm_controller/" + self.limb + "/in"
-        rospy.Subscriber(topic_name, String, self.pose_received)
+        # topic_name = "/3dof_baxter_arm_controller/" + self.limb + "/in"
+        # rospy.Subscriber(topic_name, String, self.pose_received)
+
+        # for deepmind tryout
+        topic_name = "/action"
+        rospy.Subscriber(topic_name, String, self.action_received)
+
         rospy.on_shutdown(self.clean_shutdown)
 
         # active Baxter
@@ -52,12 +57,15 @@ class ArmController3DOF(object):
         rospy.loginfo('Initialization finished!')
 
         # start the controller
-        self.control()
+        # self.control()
+
+        rospy.spin()    # only reactive control, wait for action cmd received
+
 
     def status(self):
         angles = self.interface.joint_angles()
-        robot_pose = { key: angles[key] for key in self.joint_names }
 #        robot_pose = self.interface.joint_angles()
+        robot_pose = { key: angles[key] for key in self.joint_names }
         return robot_pose
 
 
@@ -67,52 +75,69 @@ class ArmController3DOF(object):
                            'left_w0':  0.0, 'left_w1':  1.5, 'left_w2': 0.0,
                            'left_e0':  0.0, 'left_e1':  0.5 }
         self.interface.move_to_joint_positions(limb_joint_pos)
+
+        return limb_joint_pos
         # TODO look at this and see what the deep code needs
 #        limb_joint_pos = zip(self.joint_names, { 0, 0, 0 } )
 #        self.interface.move_to_joint_positions(limb_joint_pos))
 
 
-    def control(self):
-        # perform the control of the arm based on the current 'policy'
-        while not self.is_stopping:
-            self.update()
-            # sleep to create a control frequency
-            self.rate.sleep()
+    # def control(self):
+    #     # perform the control of the arm based on the current 'policy'
+    #     while not self.is_stopping:
+    #         self.update()
+    #         # sleep to create a control frequency
+    #         self.rate.sleep()
 
 
     def update(self):
         """ updating the controller
-            using a simple, linear joint position controller """
+            using a simple joint position controller """
 
         # get current joint state
         error = dict()
         limb_joint_pos = dict()
-#        for joint in self.joint_names:
-#            limb_joint_pos[joint] = self.interface.joint_angle(joint)
-#            print joint, ":" , self.interface.joint_angle(joint)
-
-#        # calculate error to desired joint states
-#        for joint in self.joint_names:
-#            error[joint] = (self.desired_joint_pos[joint] - limb_joint_pos[joint])
-#            print "error: ", joint, round(error[joint], 2)
-
-#        # linear update
-#        for joint in self.joint_names:
-#            limb_joint_pos[joint] = limb_joint_pos[joint] + self.l * error[joint]
 
         for joint in self.joint_names:
             limb_joint_pos[joint] = self.desired_joint_pos[joint]
 
-        print "new joint position: ", limb_joint_pos
+        # print "new joint position: ", limb_joint_pos
         self.interface.move_to_joint_positions(limb_joint_pos)
 
 
-    def pose_received(self, data):
+    def set_desired(self, joint_name, joint_delta):
+        jnt_pos = self.desired_joint_pos
+        jnt_pos[joint_name] = jnt_pos[joint_name] + joint_delta
+        return jnt_pos
+
+    def action_received(self, data):
         rospy.loginfo("received: %s", data.data)
-        # TODO do something real here
-        # debug
-#        self.desired_joint_pos = zip(self.joint_names, { 0, 0, 0 } )
-        self.desired_joint_pos = { key: 0.0 for key in self.joint_names }
+        bindings = {
+        #   key: (function, args, description)
+            'btn1':  (self.set_desired, ['left_s1', +self.delta_angle]),
+            'btn2':  (self.set_desired, ['left_s1', -self.delta_angle]),
+            'btn3':  (self.set_desired, ['left_e1', +self.delta_angle]),
+            'btn4':  (self.set_desired, ['left_e1', -self.delta_angle]),
+            'btn5':  (self.set_desired, ['left_w1', +self.delta_angle]),
+            'btn6':  (self.set_desired, ['left_w1', -self.delta_angle]),
+            'reset': (self.move_to_initial, []),
+        }
+
+        action_rcvd = data.data # maybe need some more processing here?
+        if action_rcvd in bindings:
+            cmd = bindings[action_rcvd]
+            self.desired_joint_pos = cmd[0](*cmd[1])
+            self.update()
+        else:
+            rospy.loginfo("Unknown command received! (no binding found)")
+
+
+#     def pose_received(self, data):
+#         rospy.loginfo("received: %s", data.data)
+#         # TODO do something real here
+#         # debug
+# #        self.desired_joint_pos = zip(self.joint_names, { 0, 0, 0 } )
+#         self.desired_joint_pos = { key: 0.0 for key in self.joint_names }
 
 
     def clean_shutdown(self):
@@ -138,7 +163,6 @@ def main():
 
     # start the controller
     arm = ArmController3DOF(args.limb)
-    print arm.status()
 
     # when it returns it is done
     print("Done.")
